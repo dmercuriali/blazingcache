@@ -146,6 +146,7 @@ public final class ManagementStatusMXBeanTest {
 
                 //fill cache with test values so as to check that memory usage goes up
                 final Set<String> insertedKeys = CacheClientTestUtils.fillCacheWithTestData(client, TEST_DATA, MAX_NO_OF_ENTRIES_BEFORE_EVICTION, 0);
+                assertEquals(MAX_NO_OF_ENTRIES_BEFORE_EVICTION, insertedKeys.size());
 
                 usedMemory = (Long) JMXUtils.getMBeanServer().getAttribute(statusBeanName, "CacheUsedMemory");
                 assertEquals(TEST_DATA.length * MAX_NO_OF_ENTRIES_BEFORE_EVICTION, usedMemory);
@@ -164,7 +165,8 @@ public final class ManagementStatusMXBeanTest {
                 }).collect(Collectors.toList());
 
                 //prepare for eviction
-                CacheClientTestUtils.fillCacheWithTestData(client, TEST_DATA, 1, 0).stream().findFirst().get();
+                final Set<String> oneMoreKey = CacheClientTestUtils.fillCacheWithTestData(client, TEST_DATA, 1, 0);
+                assertEquals(1, oneMoreKey.size());
 
                 usedMemory = (Long) JMXUtils.getMBeanServer().getAttribute(statusBeanName, "CacheUsedMemory");
                 assertEquals(TEST_DATA.length * MAX_NO_OF_ENTRIES_BEFORE_EVICTION + TEST_DATA.length, usedMemory);

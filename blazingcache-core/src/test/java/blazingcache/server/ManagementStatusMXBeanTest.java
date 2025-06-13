@@ -140,7 +140,9 @@ public final class ManagementStatusMXBeanTest {
 
             //put a few entries in client1 and client2 in order to assess the global cacheSize
             final Set<String> c1Keys = CacheClientTestUtils.fillCacheWithTestData(client1, TEST_DATA, 15, 0);
+            assertEquals(15, c1Keys.size());
             final Set<String> c2Keys = CacheClientTestUtils.fillCacheWithTestData(client2, TEST_DATA, 15, 0);
+            assertEquals(15, c2Keys.size());
             int globalCacheSize = (Integer) JMXUtils.getMBeanServer().getAttribute(statusS1BeanName, "GlobalCacheSize");
             assertEquals(30, globalCacheSize);
 
@@ -190,6 +192,7 @@ public final class ManagementStatusMXBeanTest {
             }
             assertTrue(client1.isConnected());
             Set<String> latestAddedKeys = CacheClientTestUtils.fillCacheWithTestData(client1, TEST_DATA, 12, 0);
+            assertEquals(12, latestAddedKeys.size());
             globalCacheSize = (Integer) JMXUtils.getMBeanServer().getAttribute(statusS2BeanName, "GlobalCacheSize");
             assertEquals(12, globalCacheSize);
 
@@ -215,6 +218,7 @@ public final class ManagementStatusMXBeanTest {
 
             //lock a few fresh entries
             latestAddedKeys = CacheClientTestUtils.fillCacheWithTestData(client1, TEST_DATA, 12, 0);
+            assertEquals(12, latestAddedKeys.size());
             final Set<KeyLock> acquiredLocks = new HashSet<>();
             latestAddedKeys.stream().forEach(key -> {
                 try {
