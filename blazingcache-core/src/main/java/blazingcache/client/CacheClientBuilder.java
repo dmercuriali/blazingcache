@@ -218,8 +218,8 @@ public class CacheClientBuilder {
      * JMX flag to enable publishing of JMX status and statistics.
      *
      * @param jmx true in order to enable publication of status and statistics mbeans on JMX
-     * @return the instance of {
-     * @see CacheClientBuilder}
+     * @return the instance of CacheClientBuilder
+     * @see CacheClientBuilder
      */
     public CacheClientBuilder jmx(final boolean jmx) {
         this.jmx = jmx;
@@ -261,7 +261,7 @@ public class CacheClientBuilder {
     }
 
     /**
-     * Secret for autentication to the CacheServer.
+     * Secret for authentication to the CacheServer.
      *
      * @param clientSecret
      * @return
