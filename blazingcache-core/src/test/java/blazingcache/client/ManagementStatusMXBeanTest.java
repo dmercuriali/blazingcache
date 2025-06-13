@@ -167,7 +167,6 @@ public final class ManagementStatusMXBeanTest {
                 //prepare for eviction
                 final Set<String> oneMoreKey = CacheClientTestUtils.fillCacheWithTestData(client, TEST_DATA, 1, 0);
                 assertEquals(1, oneMoreKey.size());
-                oneMoreKey.stream().findFirst().get();
 
                 usedMemory = (Long) JMXUtils.getMBeanServer().getAttribute(statusBeanName, "CacheUsedMemory");
                 assertEquals(TEST_DATA.length * MAX_NO_OF_ENTRIES_BEFORE_EVICTION + TEST_DATA.length, usedMemory);
