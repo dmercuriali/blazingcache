@@ -52,6 +52,7 @@ public class CacheServerSideConnection implements ChannelEventListener, ServerSi
     private volatile boolean authenticated;
     private volatile String username;
     private boolean requireAuthentication;
+    private boolean disconnectOnTimeout;
     private final long MAX_TS_DELTA = Long.getLong("blazingcache.server.maxclienttsdelta", 1000L * 60 * 60);
 
     private static final AtomicLong sessionId = new AtomicLong();
@@ -74,6 +75,14 @@ public class CacheServerSideConnection implements ChannelEventListener, ServerSi
 
     public void setRequireAuthentication(boolean requireAuthentication) {
         this.requireAuthentication = requireAuthentication;
+    }
+
+    public boolean isDisconnectOnTimeout() {
+        return disconnectOnTimeout;
+    }
+
+    public void setDisconnectOnTimeout(boolean disconnectOnTimeout) {
+        this.disconnectOnTimeout = disconnectOnTimeout;
     }
 
     public void setClientId(String clientId) {
@@ -517,6 +526,9 @@ public class CacheServerSideConnection implements ChannelEventListener, ServerSi
                     LOGGER.log(Level.SEVERE, "{0} not answered in time (elapsed {1} ms) to invalidation {2}: {3}, {4}",
                         new Object[]{clientId, _delta, key, message, error});
                     LOGGER.log(Level.SEVERE, "error for "+clientId, error);
+                    if (disconnectOnTimeout) {
+                        close();
+                    }
                 } else {
                     LOGGER.log(Level.FINEST, "{0} answered to invalidation {1}: {2}", new Object[]{clientId, key, message});
                 }
@@ -544,6 +556,9 @@ public class CacheServerSideConnection implements ChannelEventListener, ServerSi
                     LOGGER.log(Level.SEVERE, "{0} not answered in time (elapsed {1} ms) to put {2}: {3}, {4}",
                         new Object[]{clientId, _delta, key, message, error});
                     LOGGER.log(Level.SEVERE, "error for "+clientId, error);
+                    if (disconnectOnTimeout) {
+                        close();
+                    }
                 } else {
                     LOGGER.log(Level.FINEST, "{0} answered to put {1}: {2}", new Object[]{clientId, key, message});
                 }
@@ -568,6 +583,9 @@ public class CacheServerSideConnection implements ChannelEventListener, ServerSi
                 LOGGER.log(Level.FINEST, clientId + " answered to invalidateByPrefix " + prefix + ": " + message + ", " + error);
                 if (error != null) {
                     error.printStackTrace();
+                    if (disconnectOnTimeout) {
+                        close();
+                    }
                 }
                 // in ogni caso il client ha finito
                 invalidation.clientDone(clientId);
@@ -588,6 +606,9 @@ public class CacheServerSideConnection implements ChannelEventListener, ServerSi
                 LOGGER.log(Level.FINEST, remoteClientId + " answered to fetch key " + key + ": " + message + ", " + error);
                 if (error != null) {
                     error.printStackTrace();
+                    if (disconnectOnTimeout) {
+                        close();
+                    }
                 }
                 if (message != null) {
                     onFinish.onResult(message, null);

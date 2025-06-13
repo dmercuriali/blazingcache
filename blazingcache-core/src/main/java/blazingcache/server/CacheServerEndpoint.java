@@ -51,6 +51,7 @@ public class CacheServerEndpoint implements ServerSideConnectionAcceptor<CacheSe
         connection.setBroker(server);
         connection.setChannel(channel);
         connection.setRequireAuthentication(server.isRequireAuthentication());
+        connection.setDisconnectOnTimeout(server.isDisconnectClientsOnTimeout());
         channel.setMessagesReceiver(connection);
         connections.put(connection.getConnectionId(), connection);
         return connection;
