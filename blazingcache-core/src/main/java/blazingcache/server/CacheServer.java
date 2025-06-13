@@ -75,6 +75,7 @@ public class CacheServer implements AutoCloseable {
     private long stateChangeTimestamp;
     private long slowClientTimeout = 120000;
     private long clientFetchTimeout = 2000;
+    private boolean disconnectClientsOnTimeout = true;
     private final long lastStartupTimestamp = System.currentTimeMillis();
     private boolean requireAuthentication = true;
 
@@ -596,6 +597,14 @@ public class CacheServer implements AutoCloseable {
 
     public void setClientFetchTimeout(long clientFetchTimeout) {
         this.clientFetchTimeout = clientFetchTimeout;
+    }
+
+    public boolean isDisconnectClientsOnTimeout() {
+        return disconnectClientsOnTimeout;
+    }
+
+    public void setDisconnectClientsOnTimeout(boolean disconnectClientsOnTimeout) {
+        this.disconnectClientsOnTimeout = disconnectClientsOnTimeout;
     }
 
     /**

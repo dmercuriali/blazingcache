@@ -155,6 +155,7 @@ public class ServerMain implements AutoCloseable {
         int channelHandlersThreads = Integer.parseInt(configuration.getProperty("channelhandlers.threads", "64"));
         int slowClientsTimeout = Integer.parseInt(configuration.getProperty("slow.clients.timeout", "120000"));
         int fetchClientsTimeout = Integer.parseInt(configuration.getProperty("fetch.clients.timeout", "2000"));
+        boolean disconnectClientsOnTimeout = Boolean.parseBoolean(configuration.getProperty("disconnect.clients.on.timeout", "true"));
 
         System.out.println("Starting BlazingCache Server");
 
@@ -163,6 +164,7 @@ public class ServerMain implements AutoCloseable {
         cacheServer = new CacheServer(sharedsecret, data);
         cacheServer.setSlowClientTimeout(slowClientsTimeout);
         cacheServer.setClientFetchTimeout(fetchClientsTimeout);
+        cacheServer.setDisconnectClientsOnTimeout(disconnectClientsOnTimeout);
         cacheServer.enableJmx(jmx);
 
         switch (clusteringmode) {
