@@ -34,7 +34,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.Test;
 
 /**
- * Test for slow cclients an fetches
+ * Test for slow clients and fetches
  *
  * @author enrico.olivelli
  */
