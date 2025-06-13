@@ -37,7 +37,7 @@ import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
 /**
- * Test for slow cclients an fetches
+ * Test for slow clients and fetches
  *
  * @author enrico.olivelli
  */

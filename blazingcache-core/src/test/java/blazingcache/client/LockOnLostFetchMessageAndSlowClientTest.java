@@ -36,7 +36,7 @@ import java.util.concurrent.TimeUnit;
 import org.junit.Test;
 
 /**
- * Test for slow cclients an fetches
+ * Test for slow clients and fetches
  *
  * @author enrico.olivelli
  */
