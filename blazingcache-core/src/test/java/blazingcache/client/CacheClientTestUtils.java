@@ -17,7 +17,7 @@ package blazingcache.client;
 
 import java.util.HashSet;
 import java.util.Set;
-import java.util.stream.Stream;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Nothing else than a class implemeting utility methods for better testing.
@@ -53,17 +53,17 @@ public final class CacheClientTestUtils {
             final long expireTime) {
         final Set<String> insertedKeys = new HashSet<>();
 
-        Stream.generate(() -> System.nanoTime())
-        .limit(numberOfEntries)
-        .forEach(key -> {
+        final AtomicLong counter = new AtomicLong(System.nanoTime());
+        for (int i = 0; i < numberOfEntries; i++) {
+            final String key = Long.toString(counter.getAndIncrement());
             try {
-                client.put(key.toString(), dataPattern, expireTime);
-                insertedKeys.add(key.toString());
+                client.put(key, dataPattern, expireTime);
+                insertedKeys.add(key);
             } catch (CacheException | InterruptedException e) {
                 // FIXME
                 throw new RuntimeException("Impossible to fill cache with specified data", e);
             }
-        });
+        }
 
         return insertedKeys;
     }
