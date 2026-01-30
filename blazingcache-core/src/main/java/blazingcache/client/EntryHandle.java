@@ -52,15 +52,15 @@ public final class EntryHandle implements AutoCloseable {
      * Creates the entry and refcount of the given ByteBuf is not incremented
      *
      * @param key
-     * @param lastGetTimeNanos
+     * @param lastGetTime
      * @param serializedData
      * @param expiretime
      * @param deserialized
      */
-    EntryHandle(RawString key, long lastGetTimeNanos, ByteBuf serializedData, long expiretime, Object deserialized) {
+    public EntryHandle(RawString key, long lastGetTime, ByteBuf serializedData, long expiretime, Object deserialized) {
         this.key = key;
-        this.lastGetTime = lastGetTimeNanos;
-        this.putTime = lastGetTimeNanos;
+        this.lastGetTime = lastGetTime;
+        this.putTime = lastGetTime;
         this.buf = serializedData;
         this.expiretime = expiretime;
         this.dataLength = serializedData.readableBytes();

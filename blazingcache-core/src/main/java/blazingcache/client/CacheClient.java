@@ -48,11 +48,9 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.stream.Collectors;
@@ -64,11 +62,16 @@ import java.util.stream.Collectors;
  */
 public class CacheClient implements ChannelEventListener, ConnectionRequestInfo, AutoCloseable {
 
+    public enum CacheImplementation {
+        SIMPLE,
+        LRU
+    }
+
     private static final Logger LOGGER = Logger.getLogger(CacheClient.class.getName());
     private static final Logger CONNECTION_MANAGER_LOGGER = Logger.getLogger(CacheClient.ConnectionManager.class.getName().replace("$", "."));
 
     private final ByteBufAllocator allocator;
-    private final ConcurrentHashMap<RawString, EntryHandle> cache = new ConcurrentHashMap<>();
+    private final ClientSideCache cache;
     private final ServerLocator brokerLocator;
     private final Thread coreThread;
     private final String clientId;
@@ -82,11 +85,9 @@ public class CacheClient implements ChannelEventListener, ConnectionRequestInfo,
     private volatile boolean stopped = false;
     private Channel channel;
     private long connectionTimestamp;
-    private long lastPerformedEvictionTimestamp;
     private int fetchPriority = 10;
     private int evictionBatchSize = 100;
 
-    private final AtomicLong oldestEvictedKeyAge;
     private final MonitoredAtomicLong clientPuts;
     private final MonitoredAtomicLong clientLoads;
     private final MonitoredAtomicLong clientTouches;
@@ -109,28 +110,24 @@ public class CacheClient implements ChannelEventListener, ConnectionRequestInfo,
      * be stale if the client which updated real data (on database for instance)
      * dies (halt/crash) before invalidating the cache
      */
-    private long maxLocalEntryAge = 0;
-
     public long getMaxLocalEntryAge() {
-        return maxLocalEntryAge;
+        return cache.getTtl();
     }
 
     public void setMaxLocalEntryAge(long maxLocalEntryAge) {
-        this.maxLocalEntryAge = maxLocalEntryAge;
+        cache.setTtl(maxLocalEntryAge);
     }
 
     /**
      * Maximum amount of memory used for storing entry values. 0 or negative to
      * disable
      */
-    private long maxMemory = 0;
-
     /**
      * Maximum amount of memory used for storing entry values. 0 or negative to
      * disable.
      */
     public long getMaxMemory() {
-        return maxMemory;
+        return cache.getMaxSize();
     }
 
     /**
@@ -138,7 +135,7 @@ public class CacheClient implements ChannelEventListener, ConnectionRequestInfo,
      * disable
      */
     public void setMaxMemory(long maxMemory) {
-        this.maxMemory = maxMemory;
+        cache.setMaxSize(maxMemory);
     }
 
     /**
@@ -197,8 +194,6 @@ public class CacheClient implements ChannelEventListener, ConnectionRequestInfo,
         this.entrySerializer = entrySerializer;
     }
 
-    private final MonitoredAtomicLong actualMemory;
-
     private InternalClientListener internalClientListener;
 
     InternalClientListener getInternalClientListener() {
@@ -210,11 +205,11 @@ public class CacheClient implements ChannelEventListener, ConnectionRequestInfo,
     }
 
     public long getActualMemory() {
-        return actualMemory.get();
+        return cache.getActualMemoryUsage();
     }
 
     public long getOldestEvictedKeyAge() {
-        return this.oldestEvictedKeyAge.get();
+        return this.cache.getOldestEvictedKeyAge();
     }
 
     public String getStatus() {
@@ -240,6 +235,7 @@ public class CacheClient implements ChannelEventListener, ConnectionRequestInfo,
         private ServerLocator serverLocator;
         private ByteBufAllocator allocator = UnpooledByteBufAllocator.DEFAULT;
         private MetricsProvider metricsProvider;
+        private CacheImplementation implementation = CacheImplementation.SIMPLE;
 
         /**
          * Prefer storing data on direct memory. Defaults to 'true'.
@@ -315,6 +311,11 @@ public class CacheClient implements ChannelEventListener, ConnectionRequestInfo,
             return this;
         }
 
+        public Builder implementation(CacheImplementation implementation) {
+            this.implementation = implementation;
+            return this;
+        }
+
         /**
          * Builds the client.
          * @return a new client, to be disposed with {@link CacheClient#close() }
@@ -324,7 +325,7 @@ public class CacheClient implements ChannelEventListener, ConnectionRequestInfo,
             if (serverLocator == null) {
                 throw new IllegalArgumentException("serverLocator must be set");
             }
-            return new CacheClient(clientId, sharedSecret, serverLocator, offHeap, allocator, metricsProvider);
+            return new CacheClient(clientId, sharedSecret, serverLocator, offHeap, allocator, metricsProvider, implementation);
         }
     }
 
@@ -359,11 +360,11 @@ public class CacheClient implements ChannelEventListener, ConnectionRequestInfo,
      * @param metricsProvider
      */
     public CacheClient(String clientId, String sharedSecret, ServerLocator brokerLocator, MetricsProvider metricsProvider) {
-        this(clientId, sharedSecret, brokerLocator, true, UnpooledByteBufAllocator.DEFAULT, metricsProvider);
+        this(clientId, sharedSecret, brokerLocator, true, UnpooledByteBufAllocator.DEFAULT, metricsProvider, CacheImplementation.SIMPLE);
     }
 
     private CacheClient(String clientId, String sharedSecret, ServerLocator brokerLocator,
-                        boolean offHeap, ByteBufAllocator allocator, MetricsProvider metricsProvider) {
+                        boolean offHeap, ByteBufAllocator allocator, MetricsProvider metricsProvider, CacheImplementation impl) {
         this.offHeap = offHeap;
         this.brokerLocator = brokerLocator;
         this.sharedSecret = sharedSecret;
@@ -376,7 +377,6 @@ public class CacheClient implements ChannelEventListener, ConnectionRequestInfo,
         this.statisticsMXBean = new BlazingCacheClientStatisticsMXBean(this);
         this.statusMXBean = new BlazingCacheClientStatusMXBean(this);
 
-        this.oldestEvictedKeyAge = new AtomicLong();
         this.clientPuts = new MonitoredAtomicLong(0L, this.metricsProvider.getGaugeSet("blazingcache.client.puts"));
         this.clientLoads = new MonitoredAtomicLong(0L, this.metricsProvider.getGaugeSet("blazingcache.client.loads"));
         this.clientTouches = new MonitoredAtomicLong(0L, this.metricsProvider.getGaugeSet("blazingcache.client.touches"));
@@ -389,7 +389,16 @@ public class CacheClient implements ChannelEventListener, ConnectionRequestInfo,
         this.clientMissedGetsToMissedFetches = new MonitoredAtomicLong(0L, this.metricsProvider.getGaugeSet("blazingcache.client.gets.miss.fetchmiss"));
         this.allocator = allocator;
 
-        this.actualMemory = new MonitoredAtomicLong(0L, this.metricsProvider.getGaugeSet("blazingcache.client.memory.actualusage"));
+        switch (impl) {
+            case SIMPLE:
+                cache = new ClientSideSimpleCache(metricsProvider);
+                break;
+            case LRU:
+                cache = new ClientSideLRUCache(0, metricsProvider);
+                break;
+            default:
+                throw new IllegalArgumentException("unsupported cache implementation: " + impl);
+        }
     }
 
     /**
@@ -536,7 +545,6 @@ public class CacheClient implements ChannelEventListener, ConnectionRequestInfo,
         try {
             emptyCache();
 
-            actualMemory.reset();
             connectionTimestamp = 0;
             Channel c = channel;
             if (c != null) {
@@ -548,25 +556,8 @@ public class CacheClient implements ChannelEventListener, ConnectionRequestInfo,
         }
     }
 
-    private void batchEvictEntries(List<EntryHandle> batch) throws InterruptedException {
-
-        List<EntryHandle> removedEntries = new ArrayList<>();
-        List<RawString> keys = new ArrayList<>();
-        for (EntryHandle entry : batch) {
-            final RawString key = entry.getKey();
-            cache.compute(key, (k, removed) -> {
-                if (removed != null) {
-                    removedEntries.add(removed);
-                    this.clientEvictions.incrementAndGet(k);
-                    actualMemory.addAndGet(-removed.getSerializedDataLength(), k);
-                    removed.close();
-                    keys.add(removed.getKey());
-                }
-                // remove
-                return null;
-            });
-        }
-        if (removedEntries.isEmpty()) {
+    private void sendEvictBatchToServer(List<RawString> batch) throws InterruptedException {
+        if (batch == null || batch.isEmpty()) {
             return;
         }
 
@@ -576,20 +567,19 @@ public class CacheClient implements ChannelEventListener, ConnectionRequestInfo,
         if (_channel == null || !_channel.isValid()) {
             return;
         }
-
         if (LOGGER.isLoggable(Level.FINEST)) {
-            LOGGER.log(Level.FINEST, "sending notification of eviction for {0} entries", keys.size());
+            LOGGER.log(Level.FINEST, "sending notification of eviction for {0} entries", batch.size());
         }
 
-        _channel.sendMessageWithAsyncReply(Message.UNREGISTER_ENTRY(clientId, keys), invalidateTimeout, new ReplyCallback() {
+        _channel.sendMessageWithAsyncReply(Message.UNREGISTER_ENTRY(clientId, batch), invalidateTimeout, new ReplyCallback() {
 
             @Override
             public void replyReceived(Message originalMessage, Message message, Throwable error) {
                 if (error != null) {
                     if (LOGGER.isLoggable(Level.FINEST)) {
-                        LOGGER.log(Level.FINEST, "error while unregistering entries " + keys + ": " + error, error);
+                        LOGGER.log(Level.FINEST, "error while unregistering entries " + batch + ": " + error, error);
                     } else {
-                        LOGGER.log(Level.SEVERE, "error while unregistering entries " + keys + ": " + error);
+                        LOGGER.log(Level.SEVERE, "error while unregistering entries " + batch + ": " + error);
                     }
                 }
                 count.countDown();
@@ -643,7 +633,7 @@ public class CacheClient implements ChannelEventListener, ConnectionRequestInfo,
                         }
                         continue;
                     }
-                    if (maxMemory > 0 || maxLocalEntryAge > 0) {
+                    if (cache.getMaxSize() > 0 || cache.getTtl() > 0) {
                         try {
                             performEviction();
                         } catch (InterruptedException exit) {
@@ -688,77 +678,23 @@ public class CacheClient implements ChannelEventListener, ConnectionRequestInfo,
     }
 
     private void performEviction() throws InterruptedException {
-        long deltaMemory = maxMemory - actualMemory.longValue();
-        final long now = System.currentTimeMillis();
-        final boolean performMaxEntryAgeEviction = checkPerformEvictionForMaxLocalEntryAge(now);
-        if (deltaMemory > 0 && !performMaxEntryAgeEviction) {
-            return;
-        }
-        this.lastPerformedEvictionTimestamp = now;
-        long to_release = -deltaMemory;
-        long maxAgeTs = now - maxLocalEntryAge;
-        if (maxMemory > 0 && maxLocalEntryAge > 0) {
-            LOGGER.log(Level.FINER, "trying to release {0} bytes, and evicting local entries before {1}", new Object[]{to_release, new java.util.Date(maxAgeTs)});
-        } else if (maxMemory > 0) {
-            LOGGER.log(Level.FINER, "trying to release {0} bytes", new Object[]{to_release});
-        } else if (maxLocalEntryAge > 0) {
-            LOGGER.log(Level.FINER, "evicting local entries before {0}", new Object[]{new java.util.Date(maxAgeTs)});
-        }
-        long maxAgeTsNanos = System.nanoTime() - maxLocalEntryAge * 1000L * 1000;
-        List<EntryHandle> evictable = new ArrayList<>();
-        java.util.function.Consumer<EntryHandle> accumulator = new java.util.function.Consumer<EntryHandle>() {
-            long releasedMemory = 0;
+        LOGGER.log(Level.SEVERE, "eviction started");
+        Collection<RawString> evicted = cache.performEviction();
 
-            @Override
-            public void accept(EntryHandle t) {
-                if ((maxMemory > 0 && releasedMemory < to_release)
-                    || (maxLocalEntryAge > 0 && t.getLastGetTime() < maxAgeTsNanos)) {
-                    evictable.add(t);
-                    releasedMemory += t.getSerializedDataLength();
-                }
-            }
-        };
-
-        try {
-            cache.values().stream().sorted((EntryHandle o1, EntryHandle o2) -> {
-                long diff = o1.getLastGetTime() - o2.getLastGetTime();
-                if (diff == 0) {
-                    return 0;
-                }
-                return diff > 0 ? 1 : -1;
-            }).forEachOrdered(accumulator);
-        } catch (Exception dataChangedDuringSort) {
-            LOGGER.severe("dataChangedDuringSort: " + dataChangedDuringSort);
-            return;
-        }
-
-        if (!evictable.isEmpty()) {
-            LOGGER.log(Level.INFO, "found {0} evictable entries", evictable.size());
-            //update the age of the oldest evicted key
-            //the oldest one is the first entry in evictable
-            this.oldestEvictedKeyAge.getAndSet(System.nanoTime() - evictable.get(0).getPutTime());
-
-            List<EntryHandle> batch = new ArrayList<>();
-
-            for (final EntryHandle entry : evictable) {
-                if (LOGGER.isLoggable(Level.FINEST)) {
-                    LOGGER.log(Level.FINEST, "evict {0} size {1} bytes lastAccessDate {2}", new Object[]{entry.getKey(), entry.getSerializedDataLength(), entry.getLastGetTime()});
-                }
+        if (evicted != null && !evicted.isEmpty()) {
+            List<RawString> batch = new ArrayList<>();
+            for (final RawString entry : evicted) {
+                this.clientEvictions.incrementAndGet(entry);
                 batch.add(entry);
                 if (batch.size() >= this.evictionBatchSize) {
-                    batchEvictEntries(batch);
+                    sendEvictBatchToServer(batch);
                     batch.clear();
                 }
             }
-            batchEvictEntries(batch);
+            sendEvictBatchToServer(batch);
 
             LOGGER.log(Level.SEVERE, "eviction finished");
         }
-    }
-
-    private boolean checkPerformEvictionForMaxLocalEntryAge(final long now) {
-        return maxLocalEntryAge > 0
-               && now - lastPerformedEvictionTimestamp >= maxLocalEntryAge / 2;
     }
 
     @Override
@@ -802,9 +738,7 @@ public class CacheClient implements ChannelEventListener, ConnectionRequestInfo,
                 if (LOGGER.isLoggable(Level.FINEST)) {
                     LOGGER.log(Level.FINEST, "{0} invalidateByPrefix {1} from {2}", new Object[]{clientId, prefix, message.clientId});
                 }
-                Collection<RawString> keys = cache.
-                        keySet()
-                        .stream().filter(s -> s.startsWith(prefix)).collect(Collectors.toList());
+                Collection<RawString> keys = cache.getByPrefix(prefix);
                 keys.forEach((key) -> {
                     runningFetches.cancelFetchesForKey(key);
                     removeEntryInternal(key);
@@ -826,7 +760,7 @@ public class CacheClient implements ChannelEventListener, ConnectionRequestInfo,
                 }
 
                 ByteBuf buffer = cacheByteArray(data);
-                EntryHandle entry = new EntryHandle(key, System.nanoTime(), buffer, expiretime, null);
+                EntryHandle entry = new EntryHandle(key, System.currentTimeMillis(), buffer, expiretime, null);
 
                 storeEntry(entry);
 
@@ -872,11 +806,7 @@ public class CacheClient implements ChannelEventListener, ConnectionRequestInfo,
     }
 
     private EntryHandle getAndRetain(RawString key) {
-        EntryHandle entry = cache.computeIfPresent(key, (k, value) -> {
-            value.retain();
-            return value;
-        });
-        return entry;
+        return cache.getAndRetain(key);
     }
 
     private ByteBuf cacheByteArray(byte[] data) {
@@ -895,14 +825,10 @@ public class CacheClient implements ChannelEventListener, ConnectionRequestInfo,
         LOGGER.log(Level.SEVERE, "channel closed, clearing nearcache");
         emptyCache();
         runningFetches.clear();
-        actualMemory.reset();
     }
 
     private void emptyCache() {
-        Collection<RawString> keys = new ArrayList<>(this.cache.keySet());
-        for (RawString k : keys) {
-            removeEntryInternal(k);
-        }
+        cache.clear();
     }
 
     @Override
@@ -978,7 +904,6 @@ public class CacheClient implements ChannelEventListener, ConnectionRequestInfo,
         EntryHandle entry = getAndRetain(_key);
         this.clientFetches.incrementAndGet(_key);
         if (entry != null) {
-            entry.setLastGetTime(System.nanoTime());
             this.clientHits.incrementAndGet(_key);
             return entry;
         }
@@ -1014,7 +939,7 @@ public class CacheClient implements ChannelEventListener, ConnectionRequestInfo,
                     byte[] data = (byte[]) message.parameters.get("data");
                     long expiretime = (long) message.parameters.get("expiretime");
                     ByteBuf buffer = cacheByteArray(data);
-                    EntryHandle newEntry = new EntryHandle(_key, System.nanoTime(), buffer, expiretime, null);
+                    EntryHandle newEntry = new EntryHandle(_key, System.currentTimeMillis(), buffer, expiretime, null);
                     storeEntry(newEntry);
                     // client will be responsible of releasing the entry
                     newEntry.retain();
@@ -1048,15 +973,7 @@ public class CacheClient implements ChannelEventListener, ConnectionRequestInfo,
      * @param entry
      */
     private void storeEntry(EntryHandle entry) {
-        RawString _key = entry.getKey();
-        cache.compute(_key, (k, prev) -> {
-            if (prev != null) {
-                actualMemory.addAndGet(-prev.getSerializedDataLength(), k);
-                prev.close();
-            }
-            return entry;
-        });
-        actualMemory.addAndGet(entry.getSerializedDataLength(), _key);
+        cache.store(entry);
     }
 
     /**
@@ -1126,7 +1043,6 @@ public class CacheClient implements ChannelEventListener, ConnectionRequestInfo,
         EntryHandle entry = getAndRetain(_key);
         this.clientGets.incrementAndGet(_key);
         if (entry != null) {
-            entry.setLastGetTime(System.nanoTime());
             this.clientHits.incrementAndGet(_key);
             return entry;
         }
@@ -1202,14 +1118,7 @@ public class CacheClient implements ChannelEventListener, ConnectionRequestInfo,
     }
 
     private void removeEntryInternal(RawString key) {
-        cache.compute(key, (k, removed) -> {
-            if (removed != null) {
-                actualMemory.addAndGet(-removed.getSerializedDataLength(), k);
-                removed.close();
-            }
-            // remove
-            return null;
-        });
+        cache.remove(key);
     }
 
     /**
@@ -1222,11 +1131,8 @@ public class CacheClient implements ChannelEventListener, ConnectionRequestInfo,
     public void invalidateByPrefix(String prefix) throws InterruptedException {
         // subito rimuoviamo dal locale
         RawString _prefix = RawString.of(prefix);
-        Collection<RawString> keys = cache.keySet()
-                .stream().filter(s -> s.startsWith(_prefix)).collect(Collectors.toList());
-        keys.forEach((key) -> {
-            removeEntryInternal(key);
-        });
+        Collection<RawString> keys = cache.getByPrefix(_prefix);
+        keys.forEach(this::removeEntryInternal);
 
         while (!stopped) {
             Channel _channel = channel;
@@ -1418,7 +1324,7 @@ public class CacheClient implements ChannelEventListener, ConnectionRequestInfo,
 
         try {
             ByteBuf buffer = cacheByteArray(data);
-            EntryHandle entry = new EntryHandle(_key, System.nanoTime(), buffer, expireTime, reference);
+            EntryHandle entry = new EntryHandle(_key, System.currentTimeMillis(), buffer, expireTime, reference);
             storeEntry(entry);
 
             Message request = Message.LOAD_ENTRY(clientId, RawString.of(key), expireTime);
@@ -1471,7 +1377,7 @@ public class CacheClient implements ChannelEventListener, ConnectionRequestInfo,
 
         try {
             ByteBuf buffer = cacheByteArray(data);
-            EntryHandle entry = new EntryHandle(_key, System.nanoTime(), buffer, expireTime, reference);
+            EntryHandle entry = new EntryHandle(_key, System.currentTimeMillis(), buffer, expireTime, reference);
             storeEntry(entry);
 
             Message request = Message.PUT_ENTRY(clientId, _key, data, expireTime);
@@ -1560,8 +1466,9 @@ public class CacheClient implements ChannelEventListener, ConnectionRequestInfo,
      */
     public Set<String> getLocalKeySetByPrefix(String prefix) {
         RawString _prefix = RawString.of(prefix);
-        return cache.keySet().stream()
-                .filter(k -> k.startsWith(_prefix)).map(s -> s.toString()).collect(Collectors.toSet());
+        return cache.getByPrefix(_prefix).stream()
+                .map(RawString::toString)
+                .collect(Collectors.toSet());
     }
 
     /**
